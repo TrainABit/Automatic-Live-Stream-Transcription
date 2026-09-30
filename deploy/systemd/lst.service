@@ -1,0 +1,44 @@
+# Example unit for running lst as a long-lived service.
+#
+#   python -m venv /opt/lst/venv && /opt/lst/venv/bin/pip install 'livestream-transcriber[local]'
+#   install -m 0644 lst.service /etc/systemd/system/lst.service
+#   systemctl daemon-reload && systemctl enable --now lst
+#
+# Adjust the paths and the URL. /opt/lst/.env holds the LST_* settings (see .env.example);
+# keep it readable by the service user only.
+[Unit]
+Description=livestream-transcriber
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+# The LST_HEARTBEAT line on stderr (visible in journalctl) is the liveness signal.
+Type=simple
+User=lst
+Group=lst
+WorkingDirectory=/opt/lst
+EnvironmentFile=/opt/lst/.env
+Environment=LST_STT_MODELS_DIR=/opt/lst/models
+ExecStart=/opt/lst/venv/bin/lst run \
+    --url https://example.com/live.m3u8 \
+    --rules /opt/lst/rules.yaml \
+    --out /opt/lst/out
+
+# Exit code 2 is a configuration error: restarting would only repeat it.
+Restart=on-failure
+RestartSec=10
+RestartPreventExitStatus=2
+# 130 is what a graceful stop (SIGINT/SIGTERM) returns.
+SuccessExitStatus=130
+
+# Hardening. The service needs the network, ffmpeg and its own directory, nothing else.
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=true
+ReadWritePaths=/opt/lst
+# Local inference is CPU heavy; keep it from starving the rest of the machine.
+Nice=5
+
+[Install]
+WantedBy=multi-user.target

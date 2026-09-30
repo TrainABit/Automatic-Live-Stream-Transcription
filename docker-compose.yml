@@ -1,0 +1,33 @@
+# Example service: transcribe one stream with the local model and keep the results on the host.
+#
+#   cp .env.example .env            # then uncomment what you need
+#   cp rules.example.yaml rules.yaml
+#   STREAM_URL=https://example.com/live.m3u8 docker compose up --build
+#
+# Only process streams you have the rights to. See "Limitations" in the README.
+services:
+  lst:
+    build: .
+    image: livestream-transcriber:0.1.0
+    # Exit code 2 is a configuration error and Docker cannot exclude it, so retries are capped.
+    restart: on-failure:10
+    env_file: .env
+    command:
+      - run
+      - --url
+      - ${STREAM_URL:?set STREAM_URL to the stream to transcribe}
+      - --rules
+      - /data/rules.yaml
+      - --out
+      - /data/out
+    volumes:
+      - ./out:/data/out
+      - ./recordings:/data/recordings   # for `docker compose run lst record NAME --url ...`
+      - ./rules.yaml:/data/rules.yaml:ro
+      - models:/models
+    # The image runs as uid 10001. On Linux, make the bind-mounted directories writable
+    # for it (sudo chown -R 10001 out recordings) or run as your own user:
+    # user: "${UID}:${GID}"
+
+volumes:
+  models:
