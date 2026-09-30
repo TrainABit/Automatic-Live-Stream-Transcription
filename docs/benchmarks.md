@@ -48,7 +48,7 @@ and German clips through one model.
 | RAM | 18 GB |
 | OS | macOS 27.0.1, arm64 |
 | Python | 3.11.15 |
-| Engine | faster-whisper 1.2.1 (CTranslate2 4.8.2), CPU, `int8` |
+| Engine | faster-whisper 1.2.1 (CTranslate2 4.8.2), CPU, `int8`; sherpa-onnx 1.13.8 (Parakeet TDT 0.6B v3) |
 | ffmpeg | 8.1 |
 | Date | 2026-09-30 |
 | Load | Other jobs were running during the measurement (load average about 7 on 11 cores). Latencies are therefore pessimistic and noisy; the WER columns are not affected. |
@@ -81,6 +81,30 @@ Accuracy is identical (same model, same weights); only speed changes. Cold start
 first request with the model already on disk. The very first run additionally downloads
 the model from Hugging Face (`small` took about 78 s including the download on this
 connection).
+
+### Parakeet (sherpa-onnx) against Whisper `small`
+
+Same ten clips, measured back to back in one session (`lst models fetch --model
+parakeet-tdt-0.6b-v3` first). Whisper `small` was re-run next to it so both rows share the same
+machine load.
+
+```bash
+lst bench --clips clips --stt onnx:parakeet-tdt-0.6b-v3,local:small --out bench.json
+```
+
+| Threads | Model | WER | CER | p50 latency per 5 s chunk | p95 latency | RTF | Cold start |
+|---:|---|---:|---:|---:|---:|---:|---:|
+| 1 | Parakeet TDT 0.6B v3 | 4.6 % | 2.9 % | 0.29 s | 0.55 s | 0.08 | 2.74 s |
+| 1 | Whisper `small` | 3.1 % | 1.1 % | 6.36 s | 7.18 s | 1.73 | 9.82 s |
+| 4 | Parakeet TDT 0.6B v3 | 4.6 % | 2.9 % | 0.13 s | 0.17 s | 0.03 | 1.85 s |
+| 4 | Whisper `small` | 3.1 % | 1.1 % | 2.20 s | 2.48 s | 0.60 | 3.53 s |
+
+Parakeet is roughly 17 to 20 times faster and keeps up with a live stream even on a single
+thread; Whisper `small` is slightly more accurate here. The extra errors sit in two German
+clips (compound words and a name split differently). On ten clean TTS clips a 1.5 point WER
+gap is a handful of words, so treat it as "comparable", not as a ranking. Parakeet covers 25
+European languages, cannot be forced to a language, and returns chunk-level rather than
+word-level timestamps.
 
 ### What the errors were
 

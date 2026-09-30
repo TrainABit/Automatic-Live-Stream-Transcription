@@ -167,9 +167,20 @@ of six cloud models on German live-stream speech and are field notes, not a rank
 | Provider (`--stt`) | Latency per chunk | Cost | Quality | Privacy |
 |---|---|---|---|---|
 | `local` (faster-whisper) | Depends on CPU and model size: about 0.1x to 0.6x real time on four laptop threads, `tiny` to `small` | Free | Good to very good, grows with model size; may invent text on silence or music | Audio never leaves the machine |
-| `onnx` (sherpa-onnx: Parakeet TDT 0.6B v3 by default, Moonshine base English) | Meant for fast CPU inference; not benchmarked here | Free | Not benchmarked here | Audio never leaves the machine; models are fetched explicitly with `lst models fetch` |
+| `onnx` (sherpa-onnx: Parakeet TDT 0.6B v3 by default, Moonshine base English) | Fastest local option: about 0.03x real time on four laptop threads, roughly 17x faster than Whisper `small` | Free | Very good for its speed (4.6 % WER vs 3.1 % for Whisper `small` on the TTS set); 25 European languages, no language forcing, chunk-level timestamps only | Audio never leaves the machine; models are fetched explicitly with `lst models fetch` |
 | `openai` (`whisper-1`, `gpt-4o-mini-transcribe`, or any OpenAI-compatible server) | Network round trip: seconds per 5 s chunk, with occasional long tails | Paid per audio minute (free if `LST_OPENAI_BASE_URL` points at your own server) | Very good | Audio is sent to the provider, or to your own server |
 | `openrouter` (Whisper variants and other transcription models) | Network round trip; varies strongly by model and by hour of the day | Paid per audio minute, one key for many models | Depends on the model; see the hallucination notes in the benchmarks | Audio goes to OpenRouter and to the upstream model provider |
+
+**Which local provider?** `local` (faster-whisper) is the default because it works out of the box:
+the model downloads on first use, ~99 languages, `--language` can force one, and word timestamps
+make precise subtitles. For European languages on a CPU-only box, `onnx` with Parakeet is the
+faster choice once the model is fetched:
+
+```bash
+pip install 'livestream-transcriber[onnx]'
+lst models fetch --model parakeet-tdt-0.6b-v3
+lst run --url URL --stt onnx
+```
 
 ## Configuration
 
