@@ -1,0 +1,83 @@
+# Example rules for `lst run --rules rules.yaml` and `lst rules test rules.yaml "some text"`.
+#
+# Every rule has a type (keyword, regex or llm), a severity (info, warning,
+# critical) and a list of notification targets (console, webhook, telegram).
+# Webhook and Telegram targets need credentials in the environment or .env file;
+# see the README. A target that is not configured is logged once and skipped.
+
+version: 1
+
+defaults:
+  cooldown_seconds: 60      # the same match stays quiet for this long (stream time)
+  notify: [console]         # used by rules that do not set their own targets
+
+# Only needed for `llm` rules. Settings such as LST_RULES_LLM_BASE_URL and
+# LST_RULES_LLM_MODEL override this block; the key itself is read from the
+# environment variable named here, never from this file.
+llm:
+  base_url: https://api.openai.com/v1
+  model: gpt-4o-mini
+  api_key_env: OPENAI_API_KEY
+  timeout_seconds: 20
+
+rules:
+  # Whole-word keywords and multi-word phrases, case-insensitive.
+  - id: giveaway
+    description: A giveaway or free copy is mentioned
+    type: keyword
+    keywords: [giveaway, "free copy", gewinnspiel]
+    severity: warning
+    cooldown_seconds: 300
+    notify: [console, webhook]
+
+  - id: new-release
+    description: A launch or release announcement
+    type: keyword
+    keywords: ["new release", "just released", "now available", "out now"]
+    severity: info
+    languages: [en]         # skip segments the STT provider labels as another language
+    notify: [console, webhook]
+
+  # Rules that share a `group` share cooldown state. Here a plain mention raises an
+  # info alert, and a stronger rule escalates: a `critical` hit for the same
+  # phrase is delivered even while the info alert is still cooling down.
+  - id: security-mention
+    description: Security topics come up
+    type: keyword
+    keywords: [breach, vulnerability, "security update"]
+    severity: info
+    group: incidents
+    cooldown_seconds: 600
+
+  - id: security-incident
+    description: A security incident is being discussed
+    type: keyword
+    keywords: [breach, "data leak", "security incident"]
+    severity: critical
+    group: incidents
+    cooldown_seconds: 600
+    notify: [console, webhook, telegram]
+
+  # Regular expressions can capture named groups. Two different versions are two
+  # different alerts; the same version repeated within the cooldown is one.
+  - id: version-number
+    description: A version number is spoken or shown, such as v2.1 or v3.0.4
+    type: regex
+    pattern: '\bv(?P<major>\d+)\.(?P<minor>\d+)(?:\.(?P<patch>\d+))?\b'
+    severity: info
+    cooldown_seconds: 120
+
+  # An LLM rule sends the segment to an OpenAI-compatible chat endpoint and expects
+  # {"match": true|false, "reason": "..."}. It is disabled here; set `enabled: true`
+  # and configure the `llm:` block (or LST_RULES_LLM_*) to use it.
+  - id: product-announcement
+    description: The speaker announces a new product or feature
+    type: llm
+    prompt: >-
+      Does the excerpt announce a new product, feature or release date?
+      Answer yes only for a concrete announcement, not for general talk about products.
+    enabled: false
+    severity: warning
+    cooldown_seconds: 300
+    min_confidence: 0.5
+    notify: [console, webhook]
