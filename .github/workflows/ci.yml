@@ -15,6 +15,7 @@ concurrency:
 jobs:
   test:
     runs-on: ubuntu-latest
+    timeout-minutes: 20
     strategy:
       fail-fast: false
       matrix:
@@ -56,4 +57,4 @@ jobs:
       - name: Test
         env:
           LST_RUN_SLOW: "1"
-        run: pytest
+        run: pytest --durations=15

@@ -213,3 +213,14 @@ def _block_external_network(
     # netutil calls urllib.request.urlopen at request time, so patching the
     # attribute is enough.
     monkeypatch.setattr(urllib.request, "urlopen", _guarded_urlopen)
+
+
+def pytest_sessionfinish(session: pytest.Session, exitstatus: int) -> None:
+    """Name any non-daemon thread still alive, since it would keep the interpreter from exiting."""
+    import threading
+
+    lingering = [
+        t.name for t in threading.enumerate() if t is not threading.main_thread() and not t.daemon
+    ]
+    if lingering:
+        print(f"\nnon-daemon threads still running after the session: {lingering}")
