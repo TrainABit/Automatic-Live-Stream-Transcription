@@ -1,0 +1,35 @@
+# Secrets and local configuration
+.env
+.env.*
+!.env.example
+
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+build/
+dist/
+.venv/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.coverage
+htmlcov/
+
+# Runtime data
+recordings/
+out/
+clips/
+*.db
+*.db-wal
+*.db-shm
+*.corrupt-*
+bench-results/
+bench*.json
+bench*.md
+!docs/bench*.md
+
+# Editors / OS
+.DS_Store
+.idea/
+.vscode/

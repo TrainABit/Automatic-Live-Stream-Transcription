@@ -1,0 +1,215 @@
+"""Shared fixtures and the rules that keep the suite hermetic and honest.
+
+* every test runs with a network guard: only loopback connections are allowed;
+* ``slow`` and ``network`` tests are opt-in (``LST_RUN_SLOW=1``, ``LST_RUN_NETWORK=1``
+  or ``-m slow`` / ``-m network``);
+* a ``-m`` selection that collects nothing is an error, not a pass;
+* configuration variables from the developer's own shell never leak into tests.
+"""
+
+from __future__ import annotations
+
+import logging
+import os
+import shutil
+import socket
+import subprocess
+import tempfile
+import urllib.request
+from collections.abc import Iterator
+from pathlib import Path
+from typing import Any
+from urllib.parse import urlsplit
+
+import pytest
+
+# Opt-in markers: the reason shown on skip, and the environment switch that enables them.
+OPT_IN_MARKERS: dict[str, tuple[str, str]] = {
+    "slow": ("runs a real ffmpeg process; set LST_RUN_SLOW=1 or run -m slow", "LST_RUN_SLOW"),
+    "network": ("needs the internet; set LST_RUN_NETWORK=1 or run -m network", "LST_RUN_NETWORK"),
+}
+
+
+def _env_enabled(name: str) -> bool:
+    return os.environ.get(name, "").strip().lower() in {"1", "true", "yes", "on"}
+
+
+def pytest_collection_modifyitems(config: pytest.Config, items: list[pytest.Item]) -> None:
+    """Skip opt-in markers unless enabled by environment variable or ``-m``."""
+    if config.getoption("-m"):
+        return
+    for item in items:
+        for marker, (reason, switch) in OPT_IN_MARKERS.items():
+            if marker in item.keywords and not _env_enabled(switch):
+                item.add_marker(pytest.mark.skip(reason=reason))
+
+
+def pytest_collection_finish(session: pytest.Session) -> None:
+    """Refuse to exit 0 when a ``-m`` selector matched nothing.
+
+    ``pytest -m network`` collecting zero tests used to look like success, so an
+    untested external dependency looked like a passing one. A selector that
+    matches nothing is a mistake, not a pass.
+    """
+    expression = session.config.getoption("-m") or ""
+    if expression and not session.items:
+        raise pytest.UsageError(
+            f"marker expression {expression!r} selected 0 tests; "
+            "a silent zero-test run is not a pass."
+        )
+
+
+@pytest.fixture(autouse=True)
+def _clean_environment(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Remove settings that leak in from the developer's shell."""
+    for name in list(os.environ):
+        if name.startswith("LST_") and name not in {"LST_RUN_SLOW", "LST_RUN_NETWORK"}:
+            monkeypatch.delenv(name, raising=False)
+    for name in (
+        "OPENAI_API_KEY",
+        "OPENAI_BASE_URL",
+        "OPENROUTER_API_KEY",
+        "NOTIFY_SOCKET",
+    ):
+        monkeypatch.delenv(name, raising=False)
+
+
+@pytest.fixture(autouse=True)
+def _restore_logging() -> Iterator[None]:
+    """Undo ``setup_logging``: it swaps the root handlers for ones bound to ``sys.stderr``.
+
+    Left in place, a later test would log into a stream pytest has already closed.
+    """
+    root = logging.getLogger()
+    handlers, level = list(root.handlers), root.level
+    yield
+    for handler in list(root.handlers):
+        if handler not in handlers:
+            root.removeHandler(handler)
+            handler.close()
+    for handler in handlers:
+        if handler not in root.handlers:
+            root.addHandler(handler)
+    root.setLevel(level)
+
+
+# sun_path is 104 bytes on macOS and 108 on Linux, including the NUL.
+_AF_UNIX_PATH_MAX = 100
+
+
+@pytest.fixture
+def short_socket_dir() -> Iterator[Path]:
+    """A fresh directory whose AF_UNIX socket paths fit in ``sun_path``.
+
+    pytest's ``tmp_path`` grows with the user name and checkout location and can
+    exceed the limit; the system temp directory is short on every platform.
+    """
+    for base in (tempfile.gettempdir(), "/tmp"):
+        # mkdtemp adds ~10 bytes, the test adds a short socket name.
+        if len(os.fsencode(base)) + 24 > _AF_UNIX_PATH_MAX:
+            continue
+        if not (os.path.isdir(base) and os.access(base, os.W_OK)):
+            continue
+        path = Path(tempfile.mkdtemp(prefix="sd", dir=base))
+        try:
+            yield path
+        finally:
+            shutil.rmtree(path, ignore_errors=True)
+        return
+    pytest.skip("no temp directory short enough for an AF_UNIX socket path")
+
+
+@pytest.fixture(scope="session")
+def ffmpeg_bin() -> str:
+    """Path of the ffmpeg binary; tests that need it are skipped when it is missing."""
+    path = shutil.which("ffmpeg")
+    if path is None:
+        pytest.skip("ffmpeg not installed")
+    return path
+
+
+def _run_ffmpeg(ffmpeg: str, *args: str) -> None:
+    subprocess.run(
+        [ffmpeg, "-y", "-hide_banner", "-loglevel", "error", *args],
+        check=True,
+        capture_output=True,
+    )
+
+
+@pytest.fixture(scope="session")
+def synthetic_clip(ffmpeg_bin: str, tmp_path_factory: pytest.TempPathFactory) -> Path:
+    """A 6 s WAV containing a 440 Hz sine tone (16 kHz, mono, 16-bit PCM).
+
+    Generated by ffmpeg's ``lavfi`` source, so no binary fixture is checked in.
+    """
+    out = tmp_path_factory.mktemp("clips") / "synthetic.wav"
+    _run_ffmpeg(
+        ffmpeg_bin,
+        "-f", "lavfi", "-i", "sine=frequency=440:duration=6:sample_rate=16000",
+        "-ac", "1", "-c:a", "pcm_s16le",
+        str(out),
+    )  # fmt: skip
+    return out
+
+
+@pytest.fixture(scope="session")
+def synthetic_clip_mp4(ffmpeg_bin: str, tmp_path_factory: pytest.TempPathFactory) -> Path:
+    """The same 6 s tone inside an mp4 container (AAC), to exercise demuxing."""
+    out = tmp_path_factory.mktemp("clips_mp4") / "synthetic.mp4"
+    _run_ffmpeg(
+        ffmpeg_bin,
+        "-f", "lavfi", "-i", "sine=frequency=440:duration=6",
+        "-c:a", "aac", "-shortest",
+        str(out),
+    )  # fmt: skip
+    return out
+
+
+# --------------------------------------------------------------- network guard
+
+_REAL_SOCKET = socket.socket
+_REAL_URLOPEN = urllib.request.urlopen
+_LOOPBACK_HOSTS = {"127.0.0.1", "localhost", "::1", ""}
+
+
+def _is_loopback(host: str) -> bool:
+    return host in _LOOPBACK_HOSTS or host.startswith("127.")
+
+
+def _refuse_remote(address: Any) -> None:
+    if not isinstance(address, tuple) or not address:
+        return  # AF_UNIX path or similar: never remote
+    host = address[0]
+    if isinstance(host, str) and not _is_loopback(host):
+        raise OSError(f"network blocked in tests (mark the test 'network'): {host}")
+
+
+class _GuardedSocket(_REAL_SOCKET):  # type: ignore[misc,valid-type]
+    """A socket that refuses to connect anywhere but loopback."""
+
+    def connect(self, address: Any) -> None:
+        _refuse_remote(address)
+        super().connect(address)
+
+    def connect_ex(self, address: Any) -> int:
+        _refuse_remote(address)
+        return super().connect_ex(address)  # type: ignore[no-any-return]
+
+
+def _guarded_urlopen(url: Any, *args: Any, **kwargs: Any) -> Any:
+    target = url.full_url if isinstance(url, urllib.request.Request) else str(url)
+    if _is_loopback(urlsplit(target).hostname or ""):
+        return _REAL_URLOPEN(url, *args, **kwargs)
+    raise OSError(f"network blocked in tests (mark the test 'network'): {target}")
+
+
+@pytest.fixture(autouse=True)
+def _block_external_network(
+    request: pytest.FixtureRequest, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    if request.node.get_closest_marker("network"):
+        return
+    monkeypatch.setattr(socket, "socket", _GuardedSocket)
+    # netutil calls urllib.request.urlopen at request time, so patching the
+    # attribute is enough.
+    monkeypatch.setattr(urllib.request, "urlopen", _guarded_urlopen)
